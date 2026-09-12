@@ -134,6 +134,13 @@ class SummerTemplateBot2026(ForecastBot):
     async def run_research(self, question: MetaculusQuestion) -> str:
         async with self._concurrency_limiter:
             research = ""
+            from ratiss_brain.free_search import search_duckduckgo
+
+            free_research = search_duckduckgo(question.question_text)
+            if "indisponible" not in free_research.lower() and "aucun résultat" not in free_research.lower():
+                logger.info("Using free DuckDuckGo research for URL %s", question.page_url)
+                return free_research
+
             researcher = self.get_llm("researcher")
 
             prompt = clean_indents(
@@ -680,17 +687,17 @@ if __name__ == "__main__":
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        # llms={
-        #     "default": GeneralLlm(
-        #         model="openrouter/openai/gpt-4o",
-        #         temperature=0.3,
-        #         timeout=40,
-        #         allowed_tries=2,
-        #     ),
-        #     "summarizer": "openai/gpt-4o-mini",
-        #     "researcher": "asknews/news-summaries",
-        #     "parser": "openai/gpt-4o-mini",
-        # },
+        llms={
+            "default": GeneralLlm(
+                model="openrouter/openai/gpt-4o-mini",
+                temperature=0.3,
+                timeout=40,
+                allowed_tries=2,
+            ),
+            "summarizer": "openrouter/openai/gpt-4o-mini",
+            "researcher": "no_research",
+            "parser": "openrouter/openai/gpt-4o-mini",
+        },
     )
 
     # Per-mode tournament URL shown in the summary banner footer. These
