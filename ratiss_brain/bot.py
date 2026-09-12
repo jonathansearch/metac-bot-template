@@ -42,7 +42,14 @@ class RatissForecastBot:
         """Recherche + methode Jonathan + commentaire public pour UNE question."""
         comment = _sanitize_public_comment(await build_public_comment(question=question, get_llm=self.get_llm))
         _, params_sha256 = load_topology_params()
-        real_topology_probe = compute_real_topology([getattr(question, "question_text", str(question))])
+        question_text = getattr(question, "question_text", str(question))
+        topology_texts = [question_text]
+        topology_texts.extend(
+            comment[index : index + 800]
+            for index in range(0, len(comment), 800)
+            if comment[index : index + 800].strip()
+        )
+        real_topology_probe = compute_real_topology(topology_texts)
         entry = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "question_id": getattr(question, "id_of_question", None),

@@ -1,7 +1,11 @@
 import argparse
 import asyncio
+import json
 import logging
+import os
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
 import dotenv
@@ -43,6 +47,31 @@ from forecasting_tools import (
 
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+def sanitize_public_text(text: str) -> str:
+    """Remove any numeric P_sig value before an explanation can be published."""
+    return re.sub(r"P_sig\s*[:=]\s*[-+]?\d+(?:\.\d+)?", "P_sig: [internal score withheld]", text, flags=re.IGNORECASE)
+
+
+def log_ratiss_audit(question: MetaculusQuestion, research: str, topology: dict) -> None:
+    """Persist prompt/parameter hashes and explicit topology status for CI audit."""
+    from ratiss_brain.scaled_prompt import prompt_sha256_of_file
+
+    path = Path("ratiss_brain/logs")
+    path.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "question_id": getattr(question, "id_of_question", None),
+        "prompt_sha256": prompt_sha256_of_file(),
+        "params_sha256": topology.get("params_sha256"),
+        "real_topology_probe": topology,
+        "research_source": "duckduckgo_or_optional_provider",
+        "research_chars": len(research),
+        "submit": False,
+    }
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    (path / f"ci_run_{stamp}.jsonl").open("a", encoding="utf-8").write(json.dumps(entry) + "\n")
 
 
 class SummerTemplateBot2026(ForecastBot):
@@ -133,16 +162,7 @@ class SummerTemplateBot2026(ForecastBot):
 
     async def run_research(self, question: MetaculusQuestion) -> str:
         async with self._concurrency_limiter:
-            research = ""
-            from ratiss_brain.free_search import search_duckduckgo
-
-            free_research = search_duckduckgo(question.question_text)
-            if "indisponible" not in free_research.lower() and "aucun résultat" not in free_research.lower():
-                logger.info("Using free DuckDuckGo research for URL %s", question.page_url)
-                return free_research
-
             researcher = self.get_llm("researcher")
-
             prompt = clean_indents(
                 f"""
                 You are an assistant to a superforecaster.
@@ -159,6 +179,46 @@ class SummerTemplateBot2026(ForecastBot):
                 {question.fine_print}
                 """
             )
+
+            from ratiss_brain.free_search import search_duckduckgo
+            from ratiss_brain.topology_real import compute_real_topology
+
+            async def finish(research: str, source: str) -> str:
+                texts = [
+                    question.question_text,
+                    research,
+                    getattr(question, "resolution_criteria", "") or "",
+                    getattr(question, "fine_print", "") or "",
+                ]
+                topology = compute_real_topology([text for text in texts if text.strip()])
+                topology["research_source"] = source
+                log_ratiss_audit(question, research, topology)
+                logger.info("Research source=%s topology_status=%s", source, topology.get("status"))
+                return research
+
+            if os.getenv("PERPLEXITY_API_KEY"):
+                searcher = SmartSearcher(
+                    model="sonar",
+                    temperature=0,
+                    num_searches_to_run=2,
+                    num_sites_per_search=10,
+                    use_advanced_filters=False,
+                )
+                research = await searcher.invoke(prompt)
+                if research.strip():
+                    return await finish(research, "perplexity")
+
+            if os.getenv("ASKNEWS_CLIENT_ID") and os.getenv("ASKNEWS_SECRET"):
+                research = await AskNewsSearcher().call_preconfigured_version(
+                    "asknews/news-summaries", prompt
+                )
+                if research.strip():
+                    return await finish(research, "asknews")
+
+            free_research = await asyncio.to_thread(search_duckduckgo, question.question_text)
+            if "indisponible" not in free_research.lower() and "aucun résultat" not in free_research.lower():
+                logger.info("Using free DuckDuckGo research for URL %s", question.page_url)
+                return await finish(free_research, "duckduckgo")
 
             if isinstance(researcher, GeneralLlm):
                 research = await researcher.invoke(prompt)
@@ -186,7 +246,7 @@ class SummerTemplateBot2026(ForecastBot):
             else:
                 research = await self.get_llm("researcher", "llm").invoke(prompt)
             logger.info(f"Found Research for URL {question.page_url}:\n{research}")
-            return research
+            return await finish("[Inference du modèle sans recherche web vérifiable]\n" + research, "llm_fallback")
 
     ##################################### BINARY QUESTIONS #####################################
 
@@ -248,7 +308,7 @@ class SummerTemplateBot2026(ForecastBot):
         logger.info(
             f"Forecasted URL {question.page_url} with prediction: {decimal_pred}."
         )
-        return ReasonedPrediction(prediction_value=decimal_pred, reasoning=reasoning)
+        return ReasonedPrediction(prediction_value=decimal_pred, reasoning=sanitize_public_text(reasoning))
 
     ##################################### MULTIPLE CHOICE QUESTIONS #####################################
 
@@ -323,7 +383,7 @@ class SummerTemplateBot2026(ForecastBot):
             f"Forecasted URL {question.page_url} with prediction: {predicted_option_list}."
         )
         return ReasonedPrediction(
-            prediction_value=predicted_option_list, reasoning=reasoning
+            prediction_value=predicted_option_list, reasoning=sanitize_public_text(reasoning)
         )
 
     ##################################### NUMERIC QUESTIONS #####################################
@@ -418,7 +478,7 @@ class SummerTemplateBot2026(ForecastBot):
         logger.info(
             f"Forecasted URL {question.page_url} with prediction: {prediction.declared_percentiles}."
         )
-        return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
+        return ReasonedPrediction(prediction_value=prediction, reasoning=sanitize_public_text(reasoning))
 
     ##################################### DATE QUESTIONS #####################################
 
@@ -516,7 +576,7 @@ class SummerTemplateBot2026(ForecastBot):
         logger.info(
             f"Forecasted URL {question.page_url} with prediction: {prediction.declared_percentiles}."
         )
-        return ReasonedPrediction(prediction_value=prediction, reasoning=reasoning)
+        return ReasonedPrediction(prediction_value=prediction, reasoning=sanitize_public_text(reasoning))
 
     def _create_upper_and_lower_bound_messages(
         self, question: NumericQuestion | DateQuestion
@@ -585,7 +645,7 @@ class SummerTemplateBot2026(ForecastBot):
             prediction_no=no_info.prediction_value,  # type: ignore
         )
         return ReasonedPrediction(
-            reasoning=full_reasoning, prediction_value=full_prediction
+            reasoning=sanitize_public_text(full_reasoning), prediction_value=full_prediction
         )
 
     async def _get_question_prediction_info(
@@ -676,9 +736,8 @@ if __name__ == "__main__":
     publish_to_metaculus = False
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
-    # Configure the bot. The `llms=` block below is commented out to use
-    # whichever default models forecasting-tools picks based on your env vars;
-    # uncomment and edit to pin specific models.
+    # Configure the bot with explicit models so CI does not select an
+    # unavailable provider-specific default.
     template_bot = SummerTemplateBot2026(
         research_reports_per_question=1,
         predictions_per_research_report=1,

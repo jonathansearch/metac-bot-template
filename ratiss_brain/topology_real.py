@@ -1,8 +1,8 @@
 """Voie B: topologie sémantique réelle, score interne uniquement.
 
 Le pipeline charge les paramètres scellés, obtient des embeddings OpenRouter,
-normalise le nuage, calcule une persistance H1 Vietoris--Rips mod-2 et expose
-un score interne. Aucun score n'est destiné au commentaire public.
+normalise le nuage, puis réduit le complexe Vietoris--Rips en homologie
+persistante H1 sur F2. Les scores ne sont jamais destinés au commentaire public.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import random
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -33,66 +34,84 @@ def _l2_normalize(points: Iterable[Iterable[float]]) -> list[list[float]]:
 
 
 def _distance(a: list[float], b: list[float]) -> float:
+    if len(a) != len(b):
+        raise ValueError("embedding dimensions differ")
     return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
 
 
+def _xor_reduce(column: set[int], reduced: dict[int, set[int]], pivots: dict[int, int]) -> set[int]:
+    """Reduce one boundary column over F2 using the standard pivot map."""
+    while column:
+        pivot = max(column)
+        previous = reduced.get(pivots.get(pivot, -1))
+        if previous is None:
+            break
+        column.symmetric_difference_update(previous)
+    return column
+
+
 def h1_persistence(points: list[list[float]], max_edge: float) -> list[tuple[float, float]]:
-    """Return H1 birth/death pairs using a small mod-2 VR reduction.
-
-    This implementation tracks triangle boundaries over increasing edge
-    thresholds. It is deliberately bounded for the n<=200 sealed budget.
-    """
+    """Compute H1 birth/death pairs by Vietoris--Rips matrix reduction over F2."""
+    if max_edge <= 0 or not points:
+        return []
     n = len(points)
-    edges = {(i, j): _distance(points[i], points[j]) for i in range(n) for j in range(i + 1, n)}
-    levels = sorted({d for d in edges.values() if d <= max_edge})
-    active_edges: set[tuple[int, int]] = set()
-    active_triangles: set[tuple[int, int, int]] = set()
-    births: list[tuple[float, tuple[tuple[int, int], ...]]] = []
-    deaths: list[tuple[float, tuple[tuple[int, int], ...]]] = []
+    distances = {(i, j): _distance(points[i], points[j]) for i in range(n) for j in range(i + 1, n)}
+    edges = [(d, 1, (i, j)) for (i, j), d in distances.items() if d <= max_edge]
+    triangles = [
+        (max(distances[(i, j)], distances[(i, k)], distances[(j, k)]), 2, (i, j, k))
+        for i in range(n) for j in range(i + 1, n) for k in range(j + 1, n)
+        if distances[(i, j)] <= max_edge and distances[(i, k)] <= max_edge and distances[(j, k)] <= max_edge
+    ]
+    simplices: list[tuple[float, int, tuple[int, ...]]] = [(0.0, 0, (i,)) for i in range(n)]
+    simplices.extend(edges)
+    simplices.extend(triangles)
+    simplices.sort(key=lambda item: (item[0], item[1], item[2]))
+    index = {simplex: position for position, (_, _, simplex) in enumerate(simplices)}
+    reduced: dict[int, set[int]] = {}
+    pivots: dict[int, int] = {}
+    births: dict[int, float] = {}
+    intervals: list[tuple[float, float]] = []
 
-    def components() -> int:
-        parent = list(range(n))
-        def find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-        def union(a: int, b: int) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = ra
-        for a, b in active_edges:
-            union(a, b)
-        return len({find(i) for i in range(n)})
+    for column_index, (filtration, dimension, simplex) in enumerate(simplices):
+        if dimension == 0:
+            boundary: set[int] = set()
+        elif dimension == 1:
+            boundary = {index[(simplex[0],)], index[(simplex[1],)]}
+        else:
+            boundary = {
+                index[(simplex[0], simplex[1])],
+                index[(simplex[0], simplex[2])],
+                index[(simplex[1], simplex[2])],
+            }
+        boundary = _xor_reduce(boundary, reduced, pivots)
+        if not boundary:
+            if dimension == 1:
+                births[column_index] = filtration
+        else:
+            pivot = max(boundary)
+            reduced[column_index] = boundary
+            pivots[pivot] = column_index
+            if dimension == 2 and pivot in births:
+                intervals.append((births.pop(pivot), filtration))
 
-    previous_rank = 0
-    for level in levels:
-        for edge, distance in edges.items():
-            if distance <= level:
-                active_edges.add(edge)
-        for i in range(n):
-            for j in range(i + 1, n):
-                for k in range(j + 1, n):
-                    triangle = (i, j, k)
-                    if all(edge in active_edges for edge in ((i, j), (i, k), (j, k))):
-                        active_triangles.add(triangle)
-        rank = max(0, len(active_edges) - n + components() - len(active_triangles))
-        if rank > previous_rank:
-            for _ in range(rank - previous_rank):
-                births.append((level, tuple(sorted(active_edges))))
-        elif rank < previous_rank:
-            for _ in range(previous_rank - rank):
-                birth, _cycle = births.pop() if births else (level, tuple())
-                deaths.append((birth, level))
-        previous_rank = rank
+    intervals.extend((birth, max_edge) for birth in births.values())
+    return sorted((birth, death) for birth, death in intervals if death > birth + 1e-12)
 
-    return [(birth, max_edge) for birth, _ in births] + deaths
+
+def _prepare_points(points: list[list[float]], params: dict[str, Any]) -> list[list[float]]:
+    limit = int(params["n_points"])
+    selected = list(points)
+    if len(selected) > limit:
+        rng = random.Random(int(params["seed"]))
+        selected = [selected[i] for i in sorted(rng.sample(range(len(selected)), limit))]
+    if params.get("normalization") != "l2":
+        raise ValueError("unsupported normalization")
+    return _l2_normalize(selected)
 
 
 def internal_topology_score(points: list[list[float]], max_edge: float) -> float:
-    pairs = h1_persistence(_l2_normalize(points), max_edge)
-    persistence = sum(max(0.0, death - birth) for birth, death in pairs)
-    return persistence
+    pairs = h1_persistence(points, max_edge)
+    return sum(max(0.0, death - birth) for birth, death in pairs)
 
 
 def _embedding_client() -> Any | None:
@@ -108,24 +127,31 @@ def _embedding_client() -> Any | None:
         return None
 
 
-def compute_real_topology(texts: list[str]) -> dict[str, Any] | None:
-    """Compute bounded real topology; return None cleanly without credentials."""
+def compute_real_topology(texts: list[str]) -> dict[str, Any]:
+    """Compute bounded real topology with explicit disabled/error/ok status."""
     params, params_sha256 = load_topology_params()
+    if not os.getenv("OPENROUTER_API_KEY"):
+        return {"status": "disabled", "params_sha256": params_sha256, "reason": "missing_api_key"}
     client = _embedding_client()
     if client is None:
-        return None
+        return {"status": "error", "params_sha256": params_sha256, "reason": "embedding_client_unavailable"}
     try:
         response = client.embeddings.create(
             model=params["model"],
-            input=texts[: int(params.get("n_points", 200))],
+            input=texts[: int(params["n_points"])],
         )
-        vectors = [item.embedding for item in response.data]
+        vectors = _prepare_points([item.embedding for item in response.data], params)
         score = internal_topology_score(vectors, float(params["max_edge"]))
+        bucket = "structured" if score > 0 else "no_cycle"
+        factor = float(params["uncertainty_buckets"][bucket])
         return {
+            "status": "ok",
             "score_internal": score,
+            "adjusted_score_internal": score * factor,
+            "uncertainty_bucket": bucket,
+            "uncertainty_factor": factor,
             "params_sha256": params_sha256,
             "n_points": len(vectors),
-            "uncertainty_bucket": "structured" if score else "no_cycle",
         }
-    except Exception:
-        return None
+    except Exception as exc:
+        return {"status": "error", "params_sha256": params_sha256, "reason": type(exc).__name__}
