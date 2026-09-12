@@ -1,0 +1,8 @@
+{
+  "model": "openai/text-embedding-3-small",
+  "n_points": 200,
+  "max_edge": 0.35,
+  "normalization": "l2",
+  "seed": 20260911,
+  "comment": "Paramètres FIGÉS à la création du module (clause R6). Toute retouche après backtest = entrée au journal des déviations + re-backtest obligatoire. Le hash SHA-256 de ce fichier est logué dans chaque run (params_sha256)."
+}
