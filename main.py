@@ -664,7 +664,9 @@ if __name__ == "__main__":
     run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
 
     check_environment(strict=True)
-    publish_to_metaculus = True
+    # Safety default: this branch only performs dry-runs until an explicit
+    # go-live review changes the guard in a dedicated commit.
+    publish_to_metaculus = False
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
     # Configure the bot. The `llms=` block below is commented out to use

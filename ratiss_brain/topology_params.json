@@ -4,5 +4,10 @@
   "max_edge": 0.35,
   "normalization": "l2",
   "seed": 20260911,
+  "uncertainty_buckets": {
+    "structured": 0.9,
+    "no_cycle": 1.1,
+    "mixed": 1.0
+  },
   "comment": "Paramètres FIGÉS à la création du module (clause R6). Toute retouche après backtest = entrée au journal des déviations + re-backtest obligatoire. Le hash SHA-256 de ce fichier est logué dans chaque run (params_sha256)."
 }

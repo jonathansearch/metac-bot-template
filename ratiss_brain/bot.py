@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,8 +19,14 @@ from typing import Any
 from ratiss_brain.config import MAX_QUESTIONS_PER_RUN, SUBMIT_PREDICTIONS
 from ratiss_brain.forecast_method import build_public_comment
 from ratiss_brain.scaled_prompt import load_scaled_prompt
+from ratiss_brain.topology_real import compute_real_topology, load_topology_params
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_public_comment(comment: str) -> str:
+    """Keep internal P_sig scores out of public comments and logs."""
+    return re.sub(r"P_sig\s*[:=]\s*[-+]?\d+(?:\.\d+)?", "P_sig: [internal score withheld]", comment, flags=re.IGNORECASE)
 
 
 class RatissForecastBot:
@@ -33,13 +40,17 @@ class RatissForecastBot:
 
     async def process_question(self, question: Any) -> dict:
         """Recherche + methode Jonathan + commentaire public pour UNE question."""
-        comment = await build_public_comment(question=question, get_llm=self.get_llm)
+        comment = _sanitize_public_comment(await build_public_comment(question=question, get_llm=self.get_llm))
+        _, params_sha256 = load_topology_params()
+        real_topology_probe = compute_real_topology([getattr(question, "question_text", str(question))])
         entry = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "question_id": getattr(question, "id_of_question", None),
             "prompt_sha256": self.prompt_sha256,
             "comment": comment,
             "submit": SUBMIT_PREDICTIONS,
+            "params_sha256": params_sha256,
+            "real_topology_probe": real_topology_probe,
         }
         self._log_run(entry)
         return entry

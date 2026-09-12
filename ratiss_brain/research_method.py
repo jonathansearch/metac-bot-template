@@ -127,20 +127,21 @@ async def run_research(
             logger.info(f"[RATISS] Recherche Perplexity OK ({question.id_of_question})")
             return researched
 
-    if isinstance(researcher, GeneralLlm):
-        researched = await _run_llm_research(researcher, prompt)
-        logger.info(f"[RATISS] Recherche LLM OK ({question.id_of_question})")
-        return researched
-
     if (isinstance(researcher, str))and researcher.startswith("asknews/")and _is_real_env("ASKNEWS_CLIENT_ID"):
         asked = await _run_asknews_searcher(prompt, researcher)
         logger.info(f"[RATISS] Recherche AskNews OK ({question.id_of_question})")
         return asked
 
-    llm = get_llm("default", "llm")
+    from ratiss_brain.free_search import run_free_search
+    free_research = await run_free_search(question_text)
+    if "indisponible" not in free_research.lower() and "aucun résultat" not in free_research.lower():
+        logger.info(f"[RATISS] Recherche DuckDuckGo OK ({question.id_of_question})")
+        return free_research
+
+    llm = researcher if isinstance(researcher, GeneralLlm) else get_llm("default", "llm")
     researched = await _run_llm_research(llm, prompt)
-    logger.info(f"[RATISS] Recherche fallback OK ({question.id_of_question})")
-    return researched
+    logger.info(f"[RATISS] Recherche LLM fallback (non sourcé) OK ({question.id_of_question})")
+    return "[Inference du modèle sans recherche web vérifiable]\n" + researched
 
 
 def parse_research_to_dict(research: str) -> dict[str, Any]:

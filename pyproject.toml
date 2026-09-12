@@ -10,6 +10,7 @@ package-mode = false
 python = "^3.11"
 python-decouple = "^3.8"
 requests = "^2.32.3"
+ddgs = "^9.5.5"
 asknews = "^0.13.11"
 numpy = "^2.3.0"
 openai = "^2.0.0"
@@ -31,4 +32,3 @@ ipykernel = "^6.29.5"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-
